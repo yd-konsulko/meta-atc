@@ -1,0 +1,4 @@
+require atcd.inc
+
+ATCD_SHA256:aarch64 = "9cfeda114c321a48b55eb397866dd9f786e7caf8ec490506fae9ccc552d6313d"
+ATCD_SHA256:x86-64 = "064ae9ad001ba1a57fcb88ef3c33b8ae4c1cf05b37260b2bb2228eb289e9f82a"

@@ -55,7 +55,7 @@ make_fixture() {
 
   printf '%s\n' '#!/usr/bin/env sh' 'echo guard' \
     > "$root/meta-atc/recipes-core/atc/files/atcd-boot-confirm.sh"
-  printf '%s\n' '#!/bin/sh' 'echo install' > "$root/meta-atc/recipes-core/atc/files/install-atcd.sh"
+  printf '%s\n' '#!/bin/sh' 'echo install' > "$root/meta-atc/scripts/install-atcd.sh"
 
   cat > "$root/meta-atc/conf/layer.conf" << 'EOF'
 LAYERSERIES_COMPAT_atc = "scarthgap"
@@ -68,20 +68,26 @@ meta-rauc https://example.invalid/meta-rauc scarthgap d63878f20eba7a85ecf53566e7
 meta-tegra https://example.invalid/meta-tegra scarthgap e7d217e24ca9943e959e80da78a6025fe1373908 tegra234
 EOF
 
-  cat > "$root/meta-atc/recipes-core/atc/atcd_0.1.0.bb" << 'EOF'
+  cat > "$root/meta-atc/recipes-core/atc/atcd.inc" << 'EOF'
 ATCD_LIBEXEC = "/usr/local/libexec"
 ATCD_REMOTE_PATH = "${bindir}/atcd"
 ATCD_EXPECTED_ELF_MACHINE:qemux86-64 = "Advanced Micro Devices X86-64"
 ATCD_EXPECTED_ELF_MACHINE:qemuarm64 = "AArch64"
 ATCD_EXPECTED_ELF_MACHINE:tegra234 = "AArch64"
-do_compile[nostamp] = "1"
-do_compile() {
-    ATC_TRACK="${ATCD_TRACK}" ATC_DOWNLOAD_ONLY="${B}/atcd" \
-        sh ${WORKDIR}/install-atcd.sh
-}
+SRC_URI = " \
+    file://atcd-boot-confirm.sh \
+    https://atc.dev/agency/blobs/sha256/${ATCD_SHA256};downloadfilename=${ATCD_BLOB};name=atcd \
+    "
+SRC_URI[atcd.sha256sum] = "${ATCD_SHA256}"
 do_install() {
-    actual_machine=$(readelf -h "${B}/atcd")
+    actual_machine=$(readelf -h "${WORKDIR}/${ATCD_BLOB}")
 }
+EOF
+  cat > "$root/meta-atc/recipes-core/atc/atcd_0.2.4.bb" << 'EOF'
+require atcd.inc
+
+ATCD_SHA256:aarch64 = "9cfeda114c321a48b55eb397866dd9f786e7caf8ec490506fae9ccc552d6313d"
+ATCD_SHA256:x86-64 = "064ae9ad001ba1a57fcb88ef3c33b8ae4c1cf05b37260b2bb2228eb289e9f82a"
 EOF
 
   mkdir -p "$root/meta-atc/classes"
@@ -125,7 +131,7 @@ expect pass "clean fixture passes" "$base"
 d2="$tmp/libexec-drift"
 make_fixture "$d2"
 sed -i 's|ATCD_LIBEXEC = "/usr/local/libexec"|ATCD_LIBEXEC = "/opt/libexec"|' \
-  "$d2/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+  "$d2/meta-atc/recipes-core/atc/atcd.inc"
 expect fail "a recipe libexec path off the contract is caught" "$d2"
 
 # 4. The image loses its refusal to pre-create the store root.
@@ -146,14 +152,14 @@ expect fail "an image that creates /var/atc is caught" "$d5"
 #    wrong-architecture ELF installs and the build stays green.
 d6="$tmp/no-readelf"
 make_fixture "$d6"
-sed -i 's|readelf -h|file|' "$d6/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+sed -i 's|readelf -h|file|' "$d6/meta-atc/recipes-core/atc/atcd.inc"
 expect fail "a recipe without the readelf assertion is caught" "$d6"
 
 # 7. A machine loses its expected ELF machine name, so nothing can be compared.
 d7="$tmp/no-expected-machine"
 make_fixture "$d7"
 sed -i '/ATCD_EXPECTED_ELF_MACHINE:qemuarm64/d' \
-  "$d7/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+  "$d7/meta-atc/recipes-core/atc/atcd.inc"
 expect fail "a machine with no expected ELF name is caught" "$d7"
 
 # 8. LAYERSERIES_COMPAT stops naming a series. "The current LTS" is not a pin.
@@ -171,12 +177,24 @@ make_fixture "$d10"
 sed -i '/chown -R/d' "$d10/meta-atc/recipes-core/images/atc-image.bb"
 expect fail "an SSH key that is never chowned is caught" "$d10"
 
-# 10. The recipe fetches atcd some other way than install-atcd.sh, so neither
-#     the release signature nor the sha256 is checked.
-d11="$tmp/no-install-script"
+# 10. The atcd download is not checked against the pinned sha256, or one
+#     target has no pin, so other bytes could install.
+d11="$tmp/no-sha256-check"
 make_fixture "$d11"
-sed -i '/ATC_DOWNLOAD_ONLY/d' "$d11/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a recipe that does not fetch atcd with install-atcd.sh is caught" "$d11"
+sed -i '/atcd.sha256sum/d' "$d11/meta-atc/recipes-core/atc/atcd.inc"
+expect fail "a recipe that does not check the atcd sha256 is caught" "$d11"
+d11b="$tmp/no-pin-x86-64"
+make_fixture "$d11b"
+sed -i '/^ATCD_SHA256:x86-64/d' "$d11b/meta-atc/recipes-core/atc/atcd_0.2.4.bb"
+expect fail "a target with no pinned sha256 is caught" "$d11b"
+d11c="$tmp/two-releases"
+make_fixture "$d11c"
+cp "$d11c/meta-atc/recipes-core/atc/atcd_0.2.4.bb" "$d11c/meta-atc/recipes-core/atc/atcd_0.2.5.bb"
+expect pass "two pinned releases side by side pass" "$d11c"
+d11d="$tmp/release-without-inc"
+make_fixture "$d11d"
+sed -i '/^require atcd.inc$/d' "$d11d/meta-atc/recipes-core/atc/atcd_0.2.4.bb"
+expect fail "a release file that does not require atcd.inc is caught" "$d11d"
 
 # 12. A backtick inside a bbfatal message. Those bodies are SHELL, so a backtick
 #     is command substitution: the build would try to RUN the command named in
@@ -218,15 +236,17 @@ expect pass "a backtick in a comment is allowed" "$d14"
 d15="$tmp/recipe-installs-onto-symlink-path"
 make_fixture "$d15"
 sed -i 's|^ATCD_REMOTE_PATH = .*|ATCD_REMOTE_PATH = "/usr/local/bin/atcd"|' \
-  "$d15/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+  "$d15/meta-atc/recipes-core/atc/atcd.inc"
 expect fail "a recipe installing onto the symlink path is caught" "$d15"
 
-# 15. The download is cached, so a new release never reaches the image and the
-#     build reports success.
-d16="$tmp/no-nostamp"
-make_fixture "$d16"
-sed -i '/do_compile\[nostamp\]/d' "$d16/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a recipe without do_compile[nostamp] is caught" "$d16"
+# 15. A task downloads at build time, outside do_fetch: two builds of one tree
+#     ship different binaries, and an offline build fails.
+for flag in nostamp network; do
+  d16="$tmp/download-outside-fetch-$flag"
+  make_fixture "$d16"
+  printf 'do_compile[%s] = "1"\n' "$flag" >> "$d16/meta-atc/recipes-core/atc/atcd_0.2.4.bb"
+  expect fail "a recipe with do_compile[$flag] is caught" "$d16"
+done
 
 # 16. The deploy user is put in a `sudo` group. Yocto does not create one, so
 #     useradd fails on an unknown group and the account every push depends on is
@@ -294,7 +314,7 @@ expect fail "a layer that does not recommend tegra is caught" "$d33"
 
 d34="$tmp/no-tegra-elf"
 make_fixture "$d34"
-sed -i '/^ATCD_EXPECTED_ELF_MACHINE:tegra234/d' "$d34/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
+sed -i '/^ATCD_EXPECTED_ELF_MACHINE:tegra234/d' "$d34/meta-atc/recipes-core/atc/atcd.inc"
 expect fail "no expected ELF machine for tegra234 is caught" "$d34"
 
 # 17c. atc-tegra.inc reaches every image, so each line needs a Tegra override.
@@ -401,8 +421,12 @@ done
 # 19. A required file is missing entirely. The gate must fail, not skip.
 d9="$tmp/missing-recipe"
 make_fixture "$d9"
-rm "$d9/meta-atc/recipes-core/atc/atcd_0.1.0.bb"
-expect fail "a missing recipe is caught, not skipped" "$d9"
+rm "$d9/meta-atc/recipes-core/atc/atcd_0.2.4.bb"
+expect fail "a missing release recipe is caught, not skipped" "$d9"
+d9b="$tmp/missing-inc"
+make_fixture "$d9b"
+rm "$d9b/meta-atc/recipes-core/atc/atcd.inc"
+expect fail "a missing atcd.inc is caught, not skipped" "$d9b"
 
 # 20. A *_COMMAND entry that ends in ';' drops out of the task hash. Both
 #     shapes: one entry on the assignment line, and a continuation line.

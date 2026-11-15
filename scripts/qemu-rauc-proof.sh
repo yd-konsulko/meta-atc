@@ -42,8 +42,8 @@
 #
 # Required on the build host: poky (POKY_DIR, default <cache>/poky), the cache config
 # from cache-setup.sh, a running yocto-hashserv, and the RAUC test keys in
-# KEY_DIR (default <cache>/atc-rauc-keys). The atcd recipe downloads a verified
-# atcd with install-atcd.sh, so the build host needs network access to atc.dev.
+# KEY_DIR (default <cache>/atc-rauc-keys). The atcd recipe fetches its pinned
+# release from atc.dev, so the first build needs network access to it.
 # check_keys below names each key file.
 set -euo pipefail
 

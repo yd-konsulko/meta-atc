@@ -61,16 +61,34 @@ MACHINE=qemux86-64 bitbake atc-image
 
 ## atcd
 
-The layer does not compile atcd. The atcd recipe downloads the current
-release of a track with `install-atcd.sh`, on every build. The script checks
-the release signature and the binary's sha256 before the recipe installs it.
-The build needs network access to `https://atc.dev`.
+The layer does not compile atcd. `recipes-core/atc/atcd.inc` is the recipe.
+Each release is a file `atcd_<version>.bb` that requires it and pins the
+sha256 of the binary of each target. `do_fetch` downloads that binary from
+`https://atc.dev/agency/blobs/sha256/` and checks its sha256, like any other
+source. The download is cached in `DL_DIR`, so a build after the first one
+needs no network. With several releases, bitbake builds the highest one; set
+`PREFERRED_VERSION_atcd` to take another.
 
-The track is `stable` by default. To take another one:
+### atcd version
+
+To add the current release of a track (default `stable`):
+
+```sh
+scripts/atcd-add-release.sh [track]
+```
+
+It fetches the binary of each target with `scripts/install-atcd.sh`, which
+checks the release signature and the sha256, and writes
+`recipes-core/atc/atcd_<version>.bb`:
 
 ```
-ATCD_TRACK = "nightly"
+require atcd.inc
+
+ATCD_SHA256:aarch64 = "<digest of linux-aarch64-musl>"
+ATCD_SHA256:x86-64 = "<digest of linux-x86_64-musl>"
 ```
+
+Remove an old release file when nothing needs it anymore.
 
 ## Build
 
@@ -108,7 +126,6 @@ whole-disk image written to a running device erases its store and its identity.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ATCD_TRACK` | `stable` | the release track the image's atcd comes from |
 | `ATC_DEPLOY_USER` | `atc-deploy` | the account that atc logs in as |
 | `ATC_DEPLOY_SSH_KEY` | empty | an SSH public key to install for that account |
 | `ATC_OS_VERSION` | empty | the version that the bundle and `/etc/atc-os-version` carry |

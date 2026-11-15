@@ -31,8 +31,8 @@
 #   --self-test         check this script's logic. Needs no box.
 #
 # Required on the build host: poky (POKY_DIR, default <cache>/poky), the cache config
-# from cache-setup.sh, and network access to atc.dev: the atcd recipe downloads
-# a verified atcd with install-atcd.sh.
+# from cache-setup.sh, and network access to atc.dev on the first build: the atcd
+# recipe fetches its pinned release from there.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

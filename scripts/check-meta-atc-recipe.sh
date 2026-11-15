@@ -18,8 +18,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAYER="$(cd "${META_ATC_ROOT:-$SCRIPT_DIR/..}" && pwd)"
 GUARD_COPY="$LAYER/recipes-core/atc/files/atcd-boot-confirm.sh"
-INSTALL_COPY="$LAYER/recipes-core/atc/files/install-atcd.sh"
-RECIPE="$LAYER/recipes-core/atc/atcd_0.1.0.bb"
+INSTALL_COPY="$LAYER/scripts/install-atcd.sh"
+# atcd.inc is the recipe. Each atcd_<version>.bb requires it and pins the
+# sha256 of that release.
+RECIPE="$LAYER/recipes-core/atc/atcd.inc"
+shopt -s nullglob
+VERSIONS=("$LAYER"/recipes-core/atc/atcd_*.bb)
+shopt -u nullglob
 IMAGE="$LAYER/recipes-core/images/atc-image.bb"
 LAYER_CONF="$LAYER/conf/layer.conf"
 TEGRA_INC="$LAYER/recipes-core/images/atc-tegra.inc"
@@ -111,13 +116,22 @@ if search 'ATC_DEPLOY_SSH_KEY' "$IMAGE" > /dev/null; then
 sshd refuses a key owned by the build user"
 fi
 
-# 3c. atcd comes from install-atcd.sh in download-only mode. That script checks
-#     the release signature and the binary's sha256. Any other way to fetch it
-#     skips both checks.
-#     The command spans continuation lines, so join them first (see 3d).
-rg -q '^[^#]*ATC_DOWNLOAD_ONLY=.*install-atcd\.sh' \
-  < <(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' "$RECIPE") ||
-  fail "the recipe does not fetch atcd with install-atcd.sh in download-only mode"
+# 3c. atcd is fetched by a pinned sha256, for every target. atc.dev serves the
+#     blob at its sha256, and do_fetch checks the same value, so no other bytes
+#     install. The pins come from the signed index (scripts/install-atcd.sh).
+search '^SRC_URI\[atcd\.sha256sum\] = "\$\{ATCD_SHA256\}"$' "$RECIPE" > /dev/null ||
+  fail "the recipe does not check the atcd download against ATCD_SHA256"
+search '^[^#]*https://atc\.dev/agency/blobs/sha256/\$\{ATCD_SHA256\};' "$RECIPE" > /dev/null ||
+  fail "the recipe does not fetch atcd by its sha256 from https://atc.dev/agency/blobs"
+[ "${#VERSIONS[@]}" -gt 0 ] || fail "no atcd_<version>.bb in recipes-core/atc"
+for v in "${VERSIONS[@]}"; do
+  search '^require atcd\.inc$' "$v" > /dev/null ||
+    fail "$(basename "$v") does not require atcd.inc"
+  for arch in aarch64 x86-64; do
+    search "^ATCD_SHA256:${arch} = \"[0-9a-f]{64}\"$" "$v" > /dev/null ||
+      fail "$(basename "$v") pins no ATCD_SHA256 for $arch"
+  done
+done
 
 # 3d. No backtick inside a bbnote/bbfatal message. Those run in a SHELL function,
 #     so a backtick is command substitution, not quoting: a message reading
@@ -142,13 +156,16 @@ That is command substitution in the build shell. Use single quotes"
   fi
 done
 
-# 3e. The download must run on every build. The track's current release
-#     changes with no change to any variable, so without nostamp bitbake reuses
-#     the cached download and the image ships an OLD atcd while the build
-#     reports success.
-search '^do_compile\[nostamp\] = "1"' "$RECIPE" > /dev/null ||
-  fail "the recipe does not set do_compile[nostamp]; \
-a cached download would ship an old atcd from sstate"
+# 3e. No download outside do_fetch. A task with nostamp or network access
+#     fetches whatever the server holds at build time: two builds of one tree
+#     ship different binaries, sstate is never reused, and an offline build
+#     fails.
+for f in "$RECIPE" "${VERSIONS[@]}"; do
+  if search '^[^#]*\[(nostamp|network)\]' "$f" > /dev/null; then
+    fail "$(basename "$f") downloads outside do_fetch (nostamp or network flag); \
+pin the release in SRC_URI instead"
+  fi
+done
 
 # 3f. No `sudo` group in EXTRA_USERS_PARAMS. That group is a Debian convention;
 #     Yocto's sudo package does not create it, so `useradd -G atc,sudo` fails on
